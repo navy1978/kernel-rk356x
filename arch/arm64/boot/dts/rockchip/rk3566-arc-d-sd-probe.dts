@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+#include "rk3566-arc-d.dts"
+
+/* The first boot trial must not access a card in the games slot. */
+&sdmmc1 {
+	status = "disabled";
+};
