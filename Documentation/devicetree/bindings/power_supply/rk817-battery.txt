@@ -8,6 +8,8 @@ Required properties :
  - design_qmax: nominal capacity * 1.1
 
 Optional properties :
+ - power-supplies: optional single external fuel gauge supplying capacity and
+   capacity level; RK817 continues providing the other battery properties.
  - sleep_enter_current: current threshold of enter relax mode
  - sleep_exit_current: current threshold of exit relax mode
  - sleep_filter_current: current threshold of valid relax mode

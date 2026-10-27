@@ -31,6 +31,14 @@ properties:
     minItems: 64
     maxItems: 64
 
+  cellwise,monitor-only:
+    type: boolean
+    description: |
+      Read an already initialized gauge without changing its operating mode,
+      alerts or battery profile, and without resetting it. The gauge must be
+      awake and report a valid state of charge when probed. Must not be used
+      together with cellwise,battery-profile.
+
   cellwise,monitor-interval-ms:
     description:
       Specifies the interval in milliseconds gauge values are polled at
