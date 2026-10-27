@@ -319,3 +319,19 @@
 &gpu_opp_table {
 	/delete-node/ opp-100000000;
 };
+
+/* Use the factory-calibrated ARC gauge without reprogramming it. */
+&i2c0 {
+	arc_fuel_gauge: fuel-gauge@62 {
+		compatible = "cellwise,cw2015";
+		reg = <0x62>;
+		cellwise,monitor-only;
+		cellwise,monitor-interval-ms = <5000>;
+	};
+};
+
+&rk817 {
+	battery {
+		power-supplies = <&arc_fuel_gauge>;
+	};
+};

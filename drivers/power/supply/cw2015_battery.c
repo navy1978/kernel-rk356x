@@ -77,6 +77,7 @@ struct cw_battery {
 	u8 alert_level;
 
 	bool dual_cell;
+	bool monitor_only;
 
 	unsigned int read_errors;
 	unsigned int charge_stuck_cnt;
@@ -100,6 +101,9 @@ static int cw_update_profile(struct cw_battery *cw_bat)
 	int ret;
 	unsigned int reg_val;
 	u8 reset_val;
+
+	if (cw_bat->monitor_only)
+		return -EPERM;
 
 	/* make sure gauge is not in sleep mode */
 	ret = regmap_read(cw_bat->regmap, CW2015_REG_MODE, &reg_val);
@@ -160,6 +164,22 @@ static int cw_init(struct cw_battery *cw_bat)
 {
 	int ret;
 	unsigned int reg_val = CW2015_MODE_SLEEP;
+
+	/* Keep the factory-programmed gauge untouched on dual-boot devices. */
+	if (cw_bat->monitor_only) {
+		ret = regmap_read(cw_bat->regmap, CW2015_REG_MODE, &reg_val);
+		if (ret)
+			return ret;
+		if ((reg_val & CW2015_MODE_SLEEP_MASK) == CW2015_MODE_SLEEP)
+			return -EAGAIN;
+		ret = regmap_read(cw_bat->regmap, CW2015_REG_SOC, &reg_val);
+		if (ret)
+			return ret;
+		if (reg_val > 100)
+			return -ENODATA;
+		cw_bat->soc = reg_val;
+		return 0;
+	}
 
 	if ((reg_val & CW2015_MODE_SLEEP_MASK) == CW2015_MODE_SLEEP) {
 		reg_val = CW2015_MODE_NORMAL;
@@ -230,6 +250,9 @@ static int cw_power_on_reset(struct cw_battery *cw_bat)
 	int ret;
 	unsigned char reset_val;
 
+	if (cw_bat->monitor_only)
+		return -EPERM;
+
 	reset_val = CW2015_MODE_SLEEP;
 	ret = regmap_write(cw_bat->regmap, CW2015_REG_MODE, reset_val);
 	if (ret)
@@ -260,6 +283,9 @@ static int cw_get_soc(struct cw_battery *cw_bat)
 	ret = regmap_read(cw_bat->regmap, CW2015_REG_SOC, &soc);
 	if (ret)
 		return ret;
+
+	if (cw_bat->monitor_only)
+		return soc <= 100 ? soc : -ENODATA;
 
 	if (soc > 100) {
 		int max_error_cycles =
@@ -432,7 +458,8 @@ static void cw_bat_work(struct work_struct *work)
 	if (ret) {
 		dev_err(cw_bat->dev, "Failed to read mode from gauge: %d\n", ret);
 	} else {
-		if ((reg_val & CW2015_MODE_SLEEP_MASK) == CW2015_MODE_SLEEP) {
+		if (!cw_bat->monitor_only &&
+		    (reg_val & CW2015_MODE_SLEEP_MASK) == CW2015_MODE_SLEEP) {
 			int i;
 
 			for (i = 0; i < CW2015_RESET_TRIES; i++) {
@@ -442,9 +469,11 @@ static void cw_bat_work(struct work_struct *work)
 		}
 		cw_update_soc(cw_bat);
 		cw_update_voltage(cw_bat);
-		cw_update_charge_status(cw_bat);
-		cw_update_status(cw_bat);
-		cw_update_time_to_empty(cw_bat);
+		if (!cw_bat->monitor_only) {
+			cw_update_charge_status(cw_bat);
+			cw_update_status(cw_bat);
+			cw_update_time_to_empty(cw_bat);
+		}
 	}
 	dev_dbg(cw_bat->dev, "charger_attached = %d\n", cw_bat->charger_attached);
 	dev_dbg(cw_bat->dev, "status = %d\n", cw_bat->status);
@@ -575,16 +604,35 @@ static const struct power_supply_desc cw2015_bat_desc = {
 	.get_property	= cw_battery_get_property,
 };
 
+/* A monitor-only gauge supplies measurements; the charger supplies status. */
+static enum power_supply_property cw2015_monitor_properties[] = {
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+};
+
+static const struct power_supply_desc cw2015_monitor_desc = {
+	.name = "cw2015-battery",
+	.type = POWER_SUPPLY_TYPE_BATTERY,
+	.properties = cw2015_monitor_properties,
+	.num_properties = ARRAY_SIZE(cw2015_monitor_properties),
+	.get_property = cw_battery_get_property,
+};
+
 static int cw2015_parse_properties(struct cw_battery *cw_bat)
 {
 	struct device *dev = cw_bat->dev;
 	int length;
 	int ret;
 
+	cw_bat->monitor_only = device_property_read_bool(dev, "cellwise,monitor-only");
+
 	length = device_property_count_u8(dev, "cellwise,battery-profile");
 	if (length < 0) {
-		dev_warn(cw_bat->dev,
-			 "No battery-profile found, using current flash contents\n");
+		if (!cw_bat->monitor_only)
+			dev_warn(cw_bat->dev,
+				 "No battery-profile found, using current flash contents\n");
 	} else if (length != CW2015_SIZE_BATINFO) {
 		dev_err(cw_bat->dev, "battery-profile must be %d bytes\n",
 			CW2015_SIZE_BATINFO);
@@ -603,6 +651,8 @@ static int cw2015_parse_properties(struct cw_battery *cw_bat)
 	}
 
 	cw_bat->dual_cell = device_property_read_bool(dev, "cellwise,dual-cell");
+	if (cw_bat->monitor_only && cw_bat->bat_profile)
+		return -EINVAL;
 
 	ret = device_property_read_u32(dev, "cellwise,monitor-interval-ms",
 				       &cw_bat->poll_interval_ms);
@@ -648,6 +698,15 @@ static const struct regmap_access_table regmap_vol_table = {
 	.n_yes_ranges = 1,
 };
 
+static const struct regmap_range cw2015_monitor_no_write[] = {
+	regmap_reg_range(0, CW2015_REG_BATINFO + CW2015_SIZE_BATINFO - 1),
+};
+
+static const struct regmap_access_table cw2015_monitor_write_table = {
+	.no_ranges = cw2015_monitor_no_write,
+	.n_no_ranges = ARRAY_SIZE(cw2015_monitor_no_write),
+};
+
 static const struct regmap_config cw2015_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
@@ -662,6 +721,7 @@ static int cw_bat_probe(struct i2c_client *client)
 	int ret;
 	struct cw_battery *cw_bat;
 	struct power_supply_config psy_cfg = { 0 };
+	struct regmap_config regmap_config = cw2015_regmap_config;
 
 	cw_bat = devm_kzalloc(&client->dev, sizeof(*cw_bat), GFP_KERNEL);
 	if (!cw_bat)
@@ -677,7 +737,9 @@ static int cw_bat_probe(struct i2c_client *client)
 		return ret;
 	}
 
-	cw_bat->regmap = devm_regmap_init_i2c(client, &cw2015_regmap_config);
+	if (cw_bat->monitor_only)
+		regmap_config.wr_table = &cw2015_monitor_write_table;
+	cw_bat->regmap = devm_regmap_init_i2c(client, &regmap_config);
 	if (IS_ERR(cw_bat->regmap)) {
 		dev_err(cw_bat->dev, "Failed to allocate regmap: %ld\n",
 			PTR_ERR(cw_bat->regmap));
@@ -694,7 +756,8 @@ static int cw_bat_probe(struct i2c_client *client)
 	psy_cfg.fwnode = dev_fwnode(cw_bat->dev);
 
 	cw_bat->rk_bat = devm_power_supply_register(&client->dev,
-						    &cw2015_bat_desc,
+						    cw_bat->monitor_only ?
+						    &cw2015_monitor_desc : &cw2015_bat_desc,
 						    &psy_cfg);
 	if (IS_ERR(cw_bat->rk_bat)) {
 		/* try again if this happens */
@@ -703,10 +766,11 @@ static int cw_bat_probe(struct i2c_client *client)
 		return PTR_ERR(cw_bat->rk_bat);
 	}
 
-	ret = power_supply_get_battery_info(cw_bat->rk_bat, &cw_bat->battery);
-	if (ret) {
-		dev_warn(cw_bat->dev,
-			 "No monitored battery, some properties will be missing\n");
+	if (!cw_bat->monitor_only) {
+		ret = power_supply_get_battery_info(cw_bat->rk_bat, &cw_bat->battery);
+		if (ret)
+			dev_warn(cw_bat->dev,
+				 "No monitored battery, some properties will be missing\n");
 	}
 
 	cw_bat->battery_workqueue = create_singlethread_workqueue("rk_battery");

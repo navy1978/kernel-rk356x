@@ -2081,6 +2081,12 @@ static int rk817_battery_get_property(struct power_supply *psy,
 {
 	struct rk817_battery_device *battery = power_supply_get_drvdata(psy);
 
+	/* Boards with a discrete gauge supply capacity through power-supplies. */
+	if (psy->num_supplies &&
+	    (psp == POWER_SUPPLY_PROP_CAPACITY ||
+	     psp == POWER_SUPPLY_PROP_CAPACITY_LEVEL))
+		return power_supply_get_property_from_supplier(psy, psp, val);
+
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		val->intval = battery->current_avg * 1000;/*uA*/
@@ -2157,7 +2163,10 @@ static const struct power_supply_desc rk817_bat_desc = {
 
 static int rk817_bat_init_power_supply(struct rk817_battery_device *battery)
 {
-	struct power_supply_config psy_cfg = { .drv_data = battery, };
+	struct power_supply_config psy_cfg = {
+		.drv_data = battery,
+		.of_node = battery->dev->of_node,
+	};
 
 	battery->bat = devm_power_supply_register(battery->dev,
 						  &rk817_bat_desc,
@@ -3008,6 +3017,17 @@ static int rk817_battery_probe(struct platform_device *pdev)
 	if (!of_id) {
 		dev_err(&pdev->dev, "Failed to find matching dt id\n");
 		return -ENODEV;
+	}
+
+	/* Resolve a configured gauge before starting the battery monitor work. */
+	if (of_find_property(pdev->dev.of_node, "power-supplies", NULL)) {
+		struct power_supply *supplier;
+
+		supplier = devm_power_supply_get_by_phandle(&pdev->dev, "power-supplies");
+		if (IS_ERR(supplier))
+			return PTR_ERR(supplier);
+		if (!supplier)
+			return -EPROBE_DEFER;
 	}
 
 	battery = devm_kzalloc(&client->dev, sizeof(*battery), GFP_KERNEL);
