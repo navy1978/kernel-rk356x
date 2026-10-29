@@ -195,8 +195,8 @@ static const struct reg_default rk817_reg_defaults[] = {
 	{ RK817_CODEC_ADAC_CFG0, 0x00 },
 	{ RK817_CODEC_ADAC_CFG1, 0x07 },
 	{ RK817_CODEC_DDAC_POPD_DACST, 0x82 },
-	{ RK817_CODEC_DDAC_VOLL, 0x00 },
-	{ RK817_CODEC_DDAC_VOLR, 0x00 },
+	{ RK817_CODEC_DDAC_VOLL, OUT_VOLUME },
+	{ RK817_CODEC_DDAC_VOLR, OUT_VOLUME },
 	{ RK817_CODEC_DDAC_SR_LMT0, 0x00 },
 	{ RK817_CODEC_DDAC_LMT1, 0x00 },
 	{ RK817_CODEC_DDAC_LMT2, 0x00 },
@@ -1045,37 +1045,6 @@ static int rk817_resume_path_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rk817_dac_vol_put(struct snd_kcontrol *kcontrol,
-			     struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
-	unsigned int left_val, right_val;
-	unsigned int max_val = RK817_DAC_VOL_MAX;
-
-	left_val = max_val - ucontrol->value.integer.value[0];
-	right_val = max_val - ucontrol->value.integer.value[1];
-
-	if (left_val < RK817_DAC_VOL_MIN || left_val > RK817_DAC_VOL_MAX ||
-	    right_val < RK817_DAC_VOL_MIN || right_val > RK817_DAC_VOL_MAX) {
-
-		dev_warn(component->dev,
-			 "%s: Volume out of range [%d, %d], left=%ld, right=%ld\n",
-			 __func__,
-			 max_val - RK817_DAC_VOL_MAX,
-			 max_val - RK817_DAC_VOL_MIN,
-			 ucontrol->value.integer.value[0],
-			 ucontrol->value.integer.value[1]);
-
-		return -EINVAL;
-	}
-
-	/* Re-invert the values before setting them */
-	ucontrol->value.integer.value[0] = max_val - left_val;
-	ucontrol->value.integer.value[1] = max_val - right_val;
-
-	return snd_soc_put_volsw(kcontrol, ucontrol);
-}
-
 static struct snd_kcontrol_new rk817_snd_controls[] = {
 	SOC_ENUM_EXT("Playback Path", rk817_playback_path_type,
 		     rk817_playback_path_get, rk817_playback_path_put),
@@ -1086,10 +1055,9 @@ static struct snd_kcontrol_new rk817_snd_controls[] = {
 	SOC_ENUM_EXT("Resume Path", rk817_resume_path_type,
 		     rk817_resume_path_get, rk817_resume_path_put),
 
-	SOC_DOUBLE_R_EXT_TLV("DAC Playback Volume", RK817_CODEC_DDAC_VOLL,
-			     RK817_CODEC_DDAC_VOLR, 0, 0xff, 1,
-			     snd_soc_get_volsw, rk817_dac_vol_put,
-			     dac_vol_tlv),
+	SOC_DOUBLE_R_RANGE_TLV("DAC Playback Volume", RK817_CODEC_DDAC_VOLL,
+			       RK817_CODEC_DDAC_VOLR, 0, RK817_DAC_VOL_MIN,
+			       RK817_DAC_VOL_MAX, 1, dac_vol_tlv),
 
 	SOC_DOUBLE_R_TLV("ADC Capture Volume", RK817_CODEC_DADC_VOLL,
 			 RK817_CODEC_DADC_VOLR, 0, 0xff, 1, adc_vol_tlv),
